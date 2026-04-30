@@ -70,128 +70,301 @@ async function handleWebSocket(ws: WebSocket) {
 
 function getClientScript(): string {
   return `
+console.log('[Deno Proxy] Loading proxy client...');
+
 class ProxyClient {
   constructor() {
     this.ws = null;
     this.pendingRequests = new Map();
     this.requestId = 0;
+    this.reconnectAttempts = 0;
   }
 
   async connect() {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      return;
+    }
+
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const host = window.location.host;
     this.ws = new WebSocket(\`\${protocol}//\${host}/ws\`);
-    
+
     return new Promise((resolve, reject) => {
-      this.ws.onopen = () => resolve();
-      this.ws.onerror = reject;
+      const timeout = setTimeout(() => {
+        reject(new Error('WebSocket connection timeout'));
+      }, 10000);
+
+      this.ws.onopen = () => {
+        clearTimeout(timeout);
+        this.reconnectAttempts = 0;
+        console.log('[Deno Proxy] WebSocket connected');
+        resolve();
+      };
+
+      this.ws.onerror = (error) => {
+        clearTimeout(timeout);
+        console.error('[Deno Proxy] WebSocket error:', error);
+        reject(error);
+      };
+
+      this.ws.onclose = () => {
+        clearTimeout(timeout);
+        console.log('[Deno Proxy] WebSocket closed, reconnecting...');
+        this.scheduleReconnect();
+      };
+
       this.ws.onmessage = (event) => this.handleMessage(event);
     });
   }
 
+  scheduleReconnect() {
+    const delay = Math.min(Math.pow(2, this.reconnectAttempts) * 1000, 30000);
+    this.reconnectAttempts++;
+    setTimeout(() => this.connect().catch(() => {}), delay);
+  }
+
   handleMessage(event) {
-    const response = JSON.parse(event.data);
-    const pending = this.pendingRequests.get(response.id);
-    if (pending) {
-      pending.resolve(response);
-      this.pendingRequests.delete(response.id);
+    try {
+      const response = JSON.parse(event.data);
+      const pending = this.pendingRequests.get(response.id);
+      if (pending) {
+        pending.resolve(response);
+        this.pendingRequests.delete(response.id);
+      }
+    } catch (e) {
+      console.error('[Deno Proxy] Failed to parse response:', e);
     }
   }
 
   async fetch(url, options = {}) {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-      await this.connect();
-    }
-
-    const id = 'req-' + ++this.requestId;
-    
-    const headers = {};
-    if (options.headers) {
-      for (const [key, value] of new Headers(options.headers)) {
-        headers[key] = value;
+    try {
+      if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+        await this.connect();
       }
-    }
 
-    const request = {
-      id,
-      method: options.method || 'GET',
-      url,
-      headers,
-      body: options.body,
-    };
-
-    this.ws.send(JSON.stringify(request));
-
-    return new Promise((resolve, reject) => {
-      this.pendingRequests.set(id, { resolve, reject });
+      const id = 'req-' + ++this.requestId;
       
-      setTimeout(() => {
-        const pending = this.pendingRequests.get(id);
-        if (pending) {
-          pending.reject(new Error('Request timeout'));
-          this.pendingRequests.delete(id);
+      const headers = {};
+      if (options.headers) {
+        for (const [key, value] of new Headers(options.headers)) {
+          headers[key] = value;
         }
-      }, 30000);
-    });
+      }
+
+      const request = {
+        id,
+        method: options.method || 'GET',
+        url,
+        headers,
+        body: options.body,
+      };
+
+      this.ws.send(JSON.stringify(request));
+
+      return new Promise((resolve, reject) => {
+        this.pendingRequests.set(id, { resolve, reject });
+        
+        setTimeout(() => {
+          const pending = this.pendingRequests.get(id);
+          if (pending) {
+            pending.reject(new Error('Request timeout'));
+            this.pendingRequests.delete(id);
+          }
+        }, 30000);
+      });
+    } catch (error) {
+      console.error('[Deno Proxy] Fetch error:', error);
+      throw error;
+    }
   }
 }
 
 const proxyClient = new ProxyClient();
 
+const originalFetch = window.fetch;
+
 async function proxyFetch(input, init) {
   const url = typeof input === 'string' ? input : input.url;
   
-  const response = await proxyClient.fetch(url, init);
-  
-  const headers = new Headers();
-  for (const [key, value] of Object.entries(response.headers)) {
-    headers.set(key, value);
+  if (url.startsWith('data:') || url.startsWith('blob:') || url.startsWith('javascript:')) {
+    return originalFetch(input, init);
   }
 
-  return new Response(response.body, {
-    status: response.status,
-    statusText: response.statusText,
-    headers,
-  });
+  try {
+    const response = await proxyClient.fetch(url, init);
+    
+    const headers = new Headers();
+    for (const [key, value] of Object.entries(response.headers)) {
+      headers.set(key, value);
+    }
+
+    return new Response(response.body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers,
+    });
+  } catch (error) {
+    console.error('[Deno Proxy] proxyFetch failed:', error);
+    return originalFetch(input, init);
+  }
 }
 
 window.fetch = proxyFetch;
 
-function rewriteLinks() {
-  document.addEventListener('click', (e) => {
-    const target = e.target.closest('a');
-    if (target && target.href) {
-      e.preventDefault();
-      loadPage(target.href);
+function handleLinkClick(e) {
+  const target = e.target.closest('a');
+  if (!target || !target.href) return;
+
+  const href = target.getAttribute('href');
+  if (!href || href.startsWith('#') || href.startsWith('javascript:')) return;
+
+  const url = new URL(href, window.location.href);
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') return;
+
+  e.preventDefault();
+  e.stopPropagation();
+  
+  console.log('[Deno Proxy] Navigating to:', url.href);
+  loadPage(url.href);
+}
+
+function handleFormSubmit(e) {
+  const form = e.target.closest('form');
+  if (!form) return;
+
+  const action = form.getAttribute('action') || window.location.href;
+  const method = (form.getAttribute('method') || 'GET').toUpperCase();
+
+  const formData = new FormData(form);
+  let body = null;
+  let contentType = null;
+
+  if (method === 'POST') {
+    const enctype = form.getAttribute('enctype') || 'application/x-www-form-urlencoded';
+    if (enctype === 'multipart/form-data') {
+      body = JSON.stringify(Object.fromEntries(formData));
+      contentType = 'application/json';
+    } else {
+      body = new URLSearchParams(formData).toString();
+      contentType = 'application/x-www-form-urlencoded';
     }
-  });
+  }
+
+  const url = new URL(action, window.location.href);
+  if (method === 'GET') {
+    for (const [key, value] of formData) {
+      url.searchParams.set(key, value);
+    }
+    loadPage(url.href);
+  } else {
+    submitForm(url.href, method, body, contentType);
+  }
+
+  e.preventDefault();
+  e.stopPropagation();
+}
+
+async function submitForm(url, method, body, contentType) {
+  try {
+    const headers = contentType ? { 'Content-Type': contentType } : {};
+    const response = await proxyClient.fetch(url, { method, body, headers });
+    
+    if (response.status >= 200 && response.status < 400) {
+      const html = response.body;
+      updatePage(html, url);
+    }
+  } catch (error) {
+    console.error('[Deno Proxy] Form submit error:', error);
+  }
 }
 
 async function loadPage(url) {
   try {
+    console.log('[Deno Proxy] Loading page:', url);
     const response = await proxyClient.fetch(url);
-    const html = response.body;
     
-    const parser = new DOMParser();
-    const doc = parser.parseFromString(html, 'text/html');
-    
-    document.documentElement.innerHTML = doc.documentElement.innerHTML;
-    
-    history.pushState({ url }, '', '/proxy?url=' + encodeURIComponent(url));
-    
-    rewriteLinks();
+    if (response.status >= 200 && response.status < 400) {
+      const html = response.body;
+      updatePage(html, url);
+    } else {
+      console.error('[Deno Proxy] Page load failed:', response.status);
+      window.location.href = '/proxy?url=' + encodeURIComponent(url);
+    }
   } catch (error) {
-    console.error('Failed to load page:', error);
+    console.error('[Deno Proxy] Failed to load page:', error);
+    window.location.href = '/proxy?url=' + encodeURIComponent(url);
   }
 }
 
-window.addEventListener('popstate', (e) => {
-  if (e.state?.url) {
-    loadPage(e.state.url);
+function updatePage(html, url) {
+  try {
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(html, 'text/html');
+    
+    const newHead = doc.querySelector('head');
+    const newBody = doc.querySelector('body');
+    
+    if (newHead) {
+      const existingHead = document.querySelector('head');
+      if (existingHead) {
+        existingHead.innerHTML = newHead.innerHTML;
+        const script = document.createElement('script');
+        script.src = '/proxy-client.js';
+        script.onload = () => {
+          console.log('[Deno Proxy] Script reloaded');
+        };
+        existingHead.appendChild(script);
+      }
+    }
+    
+    if (newBody) {
+      const existingBody = document.querySelector('body');
+      if (existingBody) {
+        existingBody.innerHTML = newBody.innerHTML;
+      }
+    }
+    
+    history.pushState({ url }, '', '/proxy?url=' + encodeURIComponent(url));
+    
+    setupEventListeners();
+    console.log('[Deno Proxy] Page updated successfully');
+  } catch (error) {
+    console.error('[Deno Proxy] Failed to update page:', error);
+    window.location.href = '/proxy?url=' + encodeURIComponent(url);
   }
-});
+}
 
-rewriteLinks();
+function setupEventListeners() {
+  document.removeEventListener('click', handleLinkClick);
+  document.removeEventListener('submit', handleFormSubmit);
+  
+  document.addEventListener('click', handleLinkClick, true);
+  document.addEventListener('submit', handleFormSubmit, true);
+  
+  console.log('[Deno Proxy] Event listeners set up');
+}
+
+function initProxy() {
+  proxyClient.connect().catch(error => {
+    console.error('[Deno Proxy] Failed to connect:', error);
+  });
+  
+  setupEventListeners();
+  
+  window.addEventListener('popstate', (e) => {
+    if (e.state?.url) {
+      loadPage(e.state.url);
+    }
+  });
+  
+  console.log('[Deno Proxy] Initialized successfully');
+}
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', initProxy);
+} else {
+  initProxy();
+}
     `;
 }
 
@@ -206,7 +379,10 @@ async function handleRequest(req: Request): Promise<Response> {
 
   if (url.pathname === '/proxy-client.js') {
     return new Response(getClientScript(), {
-      headers: { 'Content-Type': 'application/javascript' },
+      headers: { 
+        'Content-Type': 'application/javascript',
+        'Cache-Control': 'no-cache'
+      },
     });
   }
 
@@ -215,8 +391,8 @@ async function handleRequest(req: Request): Promise<Response> {
     
     const response = await fetch(targetUrl, {
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
         'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
       },
     });
@@ -225,13 +401,14 @@ async function handleRequest(req: Request): Promise<Response> {
     
     html = html.replace(
       /<\/head>/i,
-      `<script src="/proxy-client.js"></script></head>`
+      `<script src="/proxy-client.js?${Date.now()}"></script></head>`
     );
 
     return new Response(html, {
       headers: {
         'Content-Type': 'text/html',
         'X-Proxy-By': 'Deno-WebSocket-Proxy',
+        'Cache-Control': 'no-cache',
       },
     });
   }
