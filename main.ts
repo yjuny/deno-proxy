@@ -1,27 +1,4 @@
-import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
-
-async function loadEnv() {
-  try {
-    const envContent = await Deno.readTextFile(".env");
-    const lines = envContent.split("\n");
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (trimmed && !trimmed.startsWith("#")) {
-        const [key, value] = trimmed.split("=");
-        if (key && value) {
-          Deno.env.set(key.trim(), value.trim());
-        }
-      }
-    }
-  } catch {
-    console.log(".env file not found, using system environment variables");
-  }
-}
-
-await loadEnv();
-
 const TARGET_URL = Deno.env.get("TARGET_URL") || "https://example.com";
-const PORT = parseInt(Deno.env.get("PORT") || "8000");
 
 async function handleRequest(req: Request): Promise<Response> {
   const url = new URL(req.url);
@@ -63,7 +40,6 @@ async function handleRequest(req: Request): Promise<Response> {
   }
 }
 
-console.log(`Proxy server running on http://localhost:${PORT}`);
 console.log(`Target URL: ${TARGET_URL}`);
 
-await serve(handleRequest, { port: PORT });
+Deno.serve(handleRequest);
