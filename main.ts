@@ -1,3 +1,107 @@
+function rewriteHtmlContent(html: string, targetUrl: URL): string {
+  let result = html;
+  
+  const baseUrl = `${targetUrl.protocol}//${targetUrl.host}`;
+
+  result = result.replace(
+    /<a\s+([^>]*)href\s*=\s*["']([^"']+)["']([^>]*)>/gi,
+    (match, before, href, after) => {
+      let newHref = href;
+      if (href.startsWith('http://') || href.startsWith('https://')) {
+        newHref = `/proxy?url=${encodeURIComponent(href)}`;
+      } else if (href.startsWith('//')) {
+        newHref = `/proxy?url=${encodeURIComponent('https:' + href)}`;
+      } else if (href.startsWith('/')) {
+        newHref = `/proxy?url=${encodeURIComponent(baseUrl + href)}`;
+      } else if (!href.startsWith('#') && !href.startsWith('javascript:')) {
+        const currentPath = targetUrl.pathname.substring(0, targetUrl.pathname.lastIndexOf('/') + 1);
+        newHref = `/proxy?url=${encodeURIComponent(baseUrl + currentPath + href)}`;
+      }
+      return `<a ${before}href="${newHref}" ${after}>`;
+    }
+  );
+
+  result = result.replace(
+    /<img\s+([^>]*)src\s*=\s*["']([^"']+)["']([^>]*)>/gi,
+    (match, before, src, after) => {
+      let newSrc = src;
+      if (src.startsWith('http://') || src.startsWith('https://')) {
+        newSrc = `/proxy?url=${encodeURIComponent(src)}`;
+      } else if (src.startsWith('//')) {
+        newSrc = `/proxy?url=${encodeURIComponent('https:' + src)}`;
+      } else if (src.startsWith('/')) {
+        newSrc = `/proxy?url=${encodeURIComponent(baseUrl + src)}`;
+      }
+      return `<img ${before}src="${newSrc}" ${after}>`;
+    }
+  );
+
+  result = result.replace(
+    /<script\s+([^>]*)src\s*=\s*["']([^"']+)["']([^>]*)>/gi,
+    (match, before, src, after) => {
+      let newSrc = src;
+      if (src.startsWith('http://') || src.startsWith('https://')) {
+        newSrc = `/proxy?url=${encodeURIComponent(src)}`;
+      } else if (src.startsWith('//')) {
+        newSrc = `/proxy?url=${encodeURIComponent('https:' + src)}`;
+      } else if (src.startsWith('/')) {
+        newSrc = `/proxy?url=${encodeURIComponent(baseUrl + src)}`;
+      }
+      return `<script ${before}src="${newSrc}" ${after}>`;
+    }
+  );
+
+  result = result.replace(
+    /<link\s+([^>]*)href\s*=\s*["']([^"']+)["']([^>]*)>/gi,
+    (match, before, href, after) => {
+      let newHref = href;
+      if (href.startsWith('http://') || href.startsWith('https://')) {
+        newHref = `/proxy?url=${encodeURIComponent(href)}`;
+      } else if (href.startsWith('//')) {
+        newHref = `/proxy?url=${encodeURIComponent('https:' + href)}`;
+      } else if (href.startsWith('/')) {
+        newHref = `/proxy?url=${encodeURIComponent(baseUrl + href)}`;
+      }
+      return `<link ${before}href="${newHref}" ${after}>`;
+    }
+  );
+
+  result = result.replace(
+    /<form\s+([^>]*)action\s*=\s*["']([^"']+)["']([^>]*)>/gi,
+    (match, before, action, after) => {
+      let newAction = action;
+      if (action.startsWith('http://') || action.startsWith('https://')) {
+        newAction = `/proxy?url=${encodeURIComponent(action)}`;
+      } else if (action.startsWith('//')) {
+        newAction = `/proxy?url=${encodeURIComponent('https:' + action)}`;
+      } else if (action.startsWith('/')) {
+        newAction = `/proxy?url=${encodeURIComponent(baseUrl + action)}`;
+      } else if (!action.startsWith('#')) {
+        const currentPath = targetUrl.pathname.substring(0, targetUrl.pathname.lastIndexOf('/') + 1);
+        newAction = `/proxy?url=${encodeURIComponent(baseUrl + currentPath + action)}`;
+      }
+      return `<form ${before}action="${newAction}" ${after}>`;
+    }
+  );
+
+  result = result.replace(
+    /url\(['"]?([^'")]+)['"]?\)/gi,
+    (match, url) => {
+      let newUrl = url;
+      if (url.startsWith('http://') || url.startsWith('https://')) {
+        newUrl = `/proxy?url=${encodeURIComponent(url)}`;
+      } else if (url.startsWith('//')) {
+        newUrl = `/proxy?url=${encodeURIComponent('https:' + url)}`;
+      } else if (url.startsWith('/')) {
+        newUrl = `/proxy?url=${encodeURIComponent(baseUrl + url)}`;
+      }
+      return `url(${newUrl})`;
+    }
+  );
+
+  return result;
+}
+
 async function handleProxyRequest(req: Request): Promise<Response> {
   const url = new URL(req.url);
 
@@ -18,83 +122,38 @@ async function handleProxyRequest(req: Request): Promise<Response> {
     .btn:hover { background: #5a6fd6; }
     input[type="text"] { width: calc(100% - 24px); padding: 12px; border: 2px solid #e0e0e0; border-radius: 8px; font-size: 16px; margin: 10px 0; }
     input[type="text"]:focus { border-color: #667eea; outline: none; }
-    .warning { background: #fff3cd; border: 1px solid #ffeeba; padding: 15px; border-radius: 8px; margin: 15px 0; }
     .success { background: #d4edda; border: 1px solid #c3e6cb; padding: 15px; border-radius: 8px; margin: 15px 0; }
-    .tabs { display: flex; gap: 10px; margin-bottom: 20px; }
-    .tab { padding: 10px 20px; border: none; border-radius: 8px; background: white; cursor: pointer; transition: all 0.3s; }
-    .tab.active { background: #667eea; color: white; }
-    .tab-content { display: none; }
-    .tab-content.active { display: block; }
   </style>
 </head>
 <body>
   <div class="header">
     <h1>Deno Proxy Server</h1>
-    <p>通用代理服务 - 支持多种访问方式</p>
+    <p>通用代理服务 - 支持链接自动中转</p>
   </div>
 
-  <div class="tabs">
-    <button class="tab active" onclick="showTab('url-param')">URL 参数</button>
-    <button class="tab" onclick="showTab('path')">路径方式</button>
-    <button class="tab" onclick="showTab('browser')">浏览器代理</button>
-  </div>
-
-  <div id="url-param" class="tab-content active">
-    <div class="method">
-      <h3>📡 方法一：URL 参数方式</h3>
-      <p>在浏览器中直接访问：</p>
-      <div class="code">https://your-domain.deno.dev/proxy?url=https://目标网站.com</div>
-      <form action="/proxy" method="get">
-        <input type="text" name="url" placeholder="输入目标网址，如 https://www.baidu.com" value="https://www.baidu.com" required>
-        <br>
-        <button type="submit" class="btn">🚀 开始代理</button>
-      </form>
-      <div class="success">
-        <strong>✅ 使用示例：</strong><br>
-        <a href="/proxy?url=https://www.baidu.com" target="_blank">代理百度</a> | 
-        <a href="/proxy?url=https://httpbin.org/get" target="_blank">测试 API</a> | 
-        <a href="/proxy?url=https://jsonplaceholder.typicode.com/posts" target="_blank">JSON 数据</a>
-      </div>
+  <div class="method">
+    <h3>📡 使用方法</h3>
+    <div class="code">https://your-domain.deno.dev/proxy?url=https://目标网站.com</div>
+    <form action="/proxy" method="get">
+      <input type="text" name="url" placeholder="输入目标网址，如 https://www.baidu.com" value="https://www.baidu.com" required>
+      <br>
+      <button type="submit" class="btn">🚀 开始代理</button>
+    </form>
+    <div class="success">
+      <strong>✅ 使用示例：</strong><br>
+      <a href="/proxy?url=https://www.baidu.com" target="_blank">代理百度</a> | 
+      <a href="/proxy?url=https://httpbin.org/get" target="_blank">测试 API</a> | 
+      <a href="/proxy?url=https://jsonplaceholder.typicode.com/posts" target="_blank">JSON 数据</a>
     </div>
   </div>
 
-  <div id="path" class="tab-content">
-    <div class="method">
-      <h3>🔗 方法二：路径方式</h3>
-      <p>直接在路径中指定目标网站：</p>
-      <div class="code">https://your-domain.deno.dev/https/目标网站.com/路径</div>
-      <div class="code">https://your-domain.deno.dev/http/目标网站.com/路径</div>
-      <div class="success">
-        <strong>✅ 使用示例：</strong><br>
-        <a href="/https/httpbin.org/get" target="_blank">/https/httpbin.org/get</a> | 
-        <a href="/http/example.com" target="_blank">/http/example.com</a>
-      </div>
+  <div class="method">
+    <h3>🔗 路径方式</h3>
+    <div class="code">https://your-domain.deno.dev/https/目标网站.com/路径</div>
+    <div class="success">
+      <a href="/https/httpbin.org/get" target="_blank">/https/httpbin.org/get</a>
     </div>
   </div>
-
-  <div id="browser" class="tab-content">
-    <div class="method">
-      <h3>🌐 方法三：浏览器代理配置（推荐）</h3>
-      <div class="warning">
-        <strong>⚠️ 注意：</strong>由于 Deno Deploy 平台限制，传统的 HTTP/HTTPS 代理（CONNECT 方法）在云端部署时可能有限制。建议使用前两种方法，或在本地运行时使用浏览器代理配置。
-      </div>
-      <div class="config">
-        <h4>本地运行配置：</h4>
-        <div class="code">deno run --allow-net --allow-env main.ts</div>
-        <p><strong>代理地址：</strong> localhost</p>
-        <p><strong>代理端口：</strong> 8000</p>
-      </div>
-    </div>
-  </div>
-
-  <script>
-    function showTab(tabId) {
-      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-      document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
-      document.querySelector(`[onclick="showTab('${tabId}')"]`).classList.add('active');
-      document.getElementById(tabId).classList.add('active');
-    }
-  </script>
 </body>
 </html>
     `, {
@@ -132,7 +191,7 @@ async function handleProxyRequest(req: Request): Promise<Response> {
   headers.set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
   headers.set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8");
   headers.set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8");
-  headers.set("Accept-Encoding", "gzip, deflate, br");
+  headers.set("Accept-Encoding", "identity");
   headers.set("Connection", "keep-alive");
   headers.delete("x-forwarded-for");
   headers.delete("x-forwarded-proto");
@@ -154,6 +213,16 @@ async function handleProxyRequest(req: Request): Promise<Response> {
     responseHeaders.delete("content-security-policy-report-only");
     responseHeaders.delete("strict-transport-security");
     responseHeaders.delete("location");
+    responseHeaders.delete("content-encoding");
+
+    let responseBody = response.body;
+    const contentType = responseHeaders.get("content-type") || "";
+    
+    if (contentType.includes("text/html")) {
+      const htmlText = await response.text();
+      const rewrittenHtml = rewriteHtmlContent(htmlText, targetUrl);
+      responseBody = new Blob([rewrittenHtml], { type: "text/html; charset=utf-8" });
+    }
 
     if (response.status >= 300 && response.status < 400) {
       const location = response.headers.get("location");
@@ -163,7 +232,7 @@ async function handleProxyRequest(req: Request): Promise<Response> {
       }
     }
 
-    return new Response(response.body, {
+    return new Response(responseBody, {
       status: response.status,
       headers: responseHeaders,
     });
