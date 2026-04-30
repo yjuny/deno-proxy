@@ -1,127 +1,248 @@
-function rewriteHtmlContent(html: string, targetUrl: URL): string {
-  let result = html;
-  const baseUrl = `${targetUrl.protocol}//${targetUrl.host}`;
-
-  result = result.replace(
-    /<a\s+([^>]*)href\s*=\s*["']([^"']+)["']([^>]*)>/gi,
-    (match, before, href, after) => {
-      if (href.startsWith('#') || href.startsWith('javascript:')) {
-        return match;
-      }
-      let newHref = href;
-      if (href.startsWith('http://') || href.startsWith('https://')) {
-        newHref = `/proxy?url=${encodeURIComponent(href)}`;
-      } else if (href.startsWith('//')) {
-        newHref = `/proxy?url=${encodeURIComponent('https:' + href)}`;
-      } else if (href.startsWith('/')) {
-        newHref = `/proxy?url=${encodeURIComponent(baseUrl + href)}`;
-      } else {
-        const currentPath = targetUrl.pathname.substring(0, targetUrl.pathname.lastIndexOf('/') + 1);
-        newHref = `/proxy?url=${encodeURIComponent(baseUrl + currentPath + href)}`;
-      }
-      return `<a ${before}href="${newHref}" ${after}>`;
-    }
-  );
-
-  result = result.replace(
-    /<img\s+([^>]*)src\s*=\s*["']([^"']+)["']([^>]*)>/gi,
-    (match, before, src, after) => {
-      if (src.startsWith('data:')) return match;
-      let newSrc = src;
-      if (src.startsWith('http://') || src.startsWith('https://')) {
-        newSrc = `/proxy?url=${encodeURIComponent(src)}`;
-      } else if (src.startsWith('//')) {
-        newSrc = `/proxy?url=${encodeURIComponent('https:' + src)}`;
-      } else if (src.startsWith('/')) {
-        newSrc = `/proxy?url=${encodeURIComponent(baseUrl + src)}`;
-      }
-      return `<img ${before}src="${newSrc}" ${after}>`;
-    }
-  );
-
-  result = result.replace(
-    /<script\s+([^>]*)src\s*=\s*["']([^"']+)["']([^>]*)>/gi,
-    (match, before, src, after) => {
-      if (src.startsWith('data:') || src.startsWith('blob:')) return match;
-      let newSrc = src;
-      if (src.startsWith('http://') || src.startsWith('https://')) {
-        newSrc = `/proxy?url=${encodeURIComponent(src)}`;
-      } else if (src.startsWith('//')) {
-        newSrc = `/proxy?url=${encodeURIComponent('https:' + src)}`;
-      } else if (src.startsWith('/')) {
-        newSrc = `/proxy?url=${encodeURIComponent(baseUrl + src)}`;
-      }
-      return `<script ${before}src="${newSrc}" ${after}>`;
-    }
-  );
-
-  result = result.replace(
-    /<link\s+([^>]*)href\s*=\s*["']([^"']+)["']([^>]*)>/gi,
-    (match, before, href, after) => {
-      if (href.startsWith('data:')) return match;
-      let newHref = href;
-      if (href.startsWith('http://') || href.startsWith('https://')) {
-        newHref = `/proxy?url=${encodeURIComponent(href)}`;
-      } else if (href.startsWith('//')) {
-        newHref = `/proxy?url=${encodeURIComponent('https:' + href)}`;
-      } else if (href.startsWith('/')) {
-        newHref = `/proxy?url=${encodeURIComponent(baseUrl + href)}`;
-      }
-      return `<link ${before}href="${newHref}" ${after}>`;
-    }
-  );
-
-  result = result.replace(
-    /<form\s+([^>]*)action\s*=\s*["']([^"']+)["']([^>]*)>/gi,
-    (match, before, action, after) => {
-      if (action === '' || action.startsWith('#')) {
-        return match;
-      }
-      let newAction = action;
-      if (action.startsWith('http://') || action.startsWith('https://')) {
-        newAction = `/proxy?url=${encodeURIComponent(action)}`;
-      } else if (action.startsWith('//')) {
-        newAction = `/proxy?url=${encodeURIComponent('https:' + action)}`;
-      } else if (action.startsWith('/')) {
-        newAction = `/proxy?url=${encodeURIComponent(baseUrl + action)}`;
-      } else {
-        const currentPath = targetUrl.pathname.substring(0, targetUrl.pathname.lastIndexOf('/') + 1);
-        newAction = `/proxy?url=${encodeURIComponent(baseUrl + currentPath + action)}`;
-      }
-      return `<form ${before}action="${newAction}" ${after}>`;
-    }
-  );
-
-  result = result.replace(
-    /background(?:-image)?\s*:\s*url\(['"]?([^'")]+)['"]?\)/gi,
-    (match, url) => {
-      if (url.startsWith('data:')) return match;
-      let newUrl = url;
-      if (url.startsWith('http://') || url.startsWith('https://')) {
-        newUrl = `/proxy?url=${encodeURIComponent(url)}`;
-      } else if (url.startsWith('//')) {
-        newUrl = `/proxy?url=${encodeURIComponent('https:' + url)}`;
-      } else if (url.startsWith('/')) {
-        newUrl = `/proxy?url=${encodeURIComponent(baseUrl + url)}`;
-      }
-      return match.replace(url, newUrl);
-    }
-  );
-
-  return result;
+interface ProxyRequest {
+  id: string;
+  method: string;
+  url: string;
+  headers: Record<string, string>;
+  body?: string;
 }
 
-async function handleProxyRequest(req: Request): Promise<Response> {
+interface ProxyResponse {
+  id: string;
+  status: number;
+  statusText: string;
+  headers: Record<string, string>;
+  body: string;
+}
+
+async function handleWebSocket(ws: WebSocket) {
+  console.log("WebSocket tunnel established");
+
+  ws.onmessage = async (event) => {
+    try {
+      const request: ProxyRequest = JSON.parse(event.data);
+      
+      const headers = new Headers(request.headers);
+      headers.delete("origin");
+      headers.delete("referer");
+
+      const response = await fetch(request.url, {
+        method: request.method,
+        headers,
+        body: request.body,
+        redirect: "follow",
+      });
+
+      const responseHeaders: Record<string, string> = {};
+      response.headers.forEach((value, key) => {
+        responseHeaders[key] = value;
+      });
+
+      const body = await response.text();
+
+      const proxyResponse: ProxyResponse = {
+        id: request.id,
+        status: response.status,
+        statusText: response.statusText,
+        headers: responseHeaders,
+        body,
+      };
+
+      ws.send(JSON.stringify(proxyResponse));
+    } catch (error) {
+      ws.send(JSON.stringify({
+        id: "",
+        status: 500,
+        statusText: "Proxy Error",
+        headers: {},
+        body: error.message,
+      }));
+    }
+  };
+
+  ws.onclose = () => {
+    console.log("WebSocket tunnel closed");
+  };
+
+  ws.onerror = (error) => {
+    console.error("WebSocket error:", error);
+  };
+}
+
+function getClientScript(): string {
+  return `
+class ProxyClient {
+  constructor() {
+    this.ws = null;
+    this.pendingRequests = new Map();
+    this.requestId = 0;
+  }
+
+  async connect() {
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const host = window.location.host;
+    this.ws = new WebSocket(\`\${protocol}//\${host}/ws\`);
+    
+    return new Promise((resolve, reject) => {
+      this.ws.onopen = () => resolve();
+      this.ws.onerror = reject;
+      this.ws.onmessage = (event) => this.handleMessage(event);
+    });
+  }
+
+  handleMessage(event) {
+    const response = JSON.parse(event.data);
+    const pending = this.pendingRequests.get(response.id);
+    if (pending) {
+      pending.resolve(response);
+      this.pendingRequests.delete(response.id);
+    }
+  }
+
+  async fetch(url, options = {}) {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      await this.connect();
+    }
+
+    const id = 'req-' + ++this.requestId;
+    
+    const headers = {};
+    if (options.headers) {
+      for (const [key, value] of new Headers(options.headers)) {
+        headers[key] = value;
+      }
+    }
+
+    const request = {
+      id,
+      method: options.method || 'GET',
+      url,
+      headers,
+      body: options.body,
+    };
+
+    this.ws.send(JSON.stringify(request));
+
+    return new Promise((resolve, reject) => {
+      this.pendingRequests.set(id, { resolve, reject });
+      
+      setTimeout(() => {
+        const pending = this.pendingRequests.get(id);
+        if (pending) {
+          pending.reject(new Error('Request timeout'));
+          this.pendingRequests.delete(id);
+        }
+      }, 30000);
+    });
+  }
+}
+
+const proxyClient = new ProxyClient();
+
+async function proxyFetch(input, init) {
+  const url = typeof input === 'string' ? input : input.url;
+  
+  const response = await proxyClient.fetch(url, init);
+  
+  const headers = new Headers();
+  for (const [key, value] of Object.entries(response.headers)) {
+    headers.set(key, value);
+  }
+
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
+
+window.fetch = proxyFetch;
+
+function rewriteLinks() {
+  document.addEventListener('click', (e) => {
+    const target = e.target.closest('a');
+    if (target && target.href) {
+      e.preventDefault();
+      loadPage(target.href);
+    }
+  });
+}
+
+async function loadPage(url) {
+  try {
+    const response = await proxyClient.fetch(url);
+    const html = response.body;
+    
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(html, 'text/html');
+    
+    document.documentElement.innerHTML = doc.documentElement.innerHTML;
+    
+    history.pushState({ url }, '', '/proxy?url=' + encodeURIComponent(url));
+    
+    rewriteLinks();
+  } catch (error) {
+    console.error('Failed to load page:', error);
+  }
+}
+
+window.addEventListener('popstate', (e) => {
+  if (e.state?.url) {
+    loadPage(e.state.url);
+  }
+});
+
+rewriteLinks();
+    `;
+}
+
+async function handleRequest(req: Request): Promise<Response> {
   const url = new URL(req.url);
 
-  if (!url.pathname || url.pathname === '/' || url.pathname === '/index.html') {
-    return new Response(`
+  if (url.pathname === '/ws') {
+    const { socket, response } = Deno.upgradeWebSocket(req);
+    handleWebSocket(socket);
+    return response;
+  }
+
+  if (url.pathname === '/proxy-client.js') {
+    return new Response(getClientScript(), {
+      headers: { 'Content-Type': 'application/javascript' },
+    });
+  }
+
+  if (url.pathname === '/proxy' && url.searchParams.has('url')) {
+    const targetUrl = url.searchParams.get('url')!;
+    
+    const response = await fetch(targetUrl, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+      },
+    });
+
+    let html = await response.text();
+    
+    html = html.replace(
+      /<\/head>/i,
+      `<script src="/proxy-client.js"></script></head>`
+    );
+
+    return new Response(html, {
+      headers: {
+        'Content-Type': 'text/html',
+        'X-Proxy-By': 'Deno-WebSocket-Proxy',
+      },
+    });
+  }
+
+  return new Response(`
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Deno Proxy Server</title>
+  <title>Deno WebSocket Proxy</title>
   <style>
     body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 900px; margin: 0 auto; padding: 20px; background: #f5f7fa; }
     .header { text-align: center; padding: 20px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border-radius: 12px; margin-bottom: 20px; }
@@ -132,12 +253,14 @@ async function handleProxyRequest(req: Request): Promise<Response> {
     input[type="text"] { width: calc(100% - 24px); padding: 12px; border: 2px solid #e0e0e0; border-radius: 8px; font-size: 16px; margin: 10px 0; }
     input[type="text"]:focus { border-color: #667eea; outline: none; }
     .success { background: #d4edda; border: 1px solid #c3e6cb; padding: 15px; border-radius: 8px; margin: 15px 0; }
+    .feature { display: flex; align-items: center; gap: 10px; margin: 10px 0; }
+    .feature svg { width: 20px; height: 20px; color: #28a745; }
   </style>
 </head>
 <body>
   <div class="header">
-    <h1>Deno Proxy Server</h1>
-    <p>通用代理服务 - 支持链接自动中转</p>
+    <h1>Deno WebSocket Proxy</h1>
+    <p>基于 WebSocket 隧道的代理服务</p>
   </div>
 
   <div class="method">
@@ -155,102 +278,42 @@ async function handleProxyRequest(req: Request): Promise<Response> {
       <a href="/proxy?url=https://jsonplaceholder.typicode.com/posts" target="_blank">JSON 数据</a>
     </div>
   </div>
+
+  <div class="method">
+    <h3>✨ 功能特性</h3>
+    <div class="feature">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M22 12h-4l-3 9L9 3l-3 9H2"/>
+      </svg>
+      <span>支持所有 HTTP/HTTPS 请求</span>
+    </div>
+    <div class="feature">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <circle cx="12" cy="12" r="3"/>
+        <path d="M12 1v6m0 6v6m4.22-13.22a4 4 0 015.66 0l4.24 4.24a4 4 0 010 5.66l-4.25 4.25a4 4 0 01-5.66 0l-4.24-4.24a4 4 0 010-5.66z"/>
+      </svg>
+      <span>WebSocket 加密隧道</span>
+    </div>
+    <div class="feature">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M18 21V5a2 2 0 00-2-2H8a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"/>
+      </svg>
+      <span>支持表单提交和 AJAX 请求</span>
+    </div>
+    <div class="feature">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>
+      </svg>
+      <span>支持 Deno Deploy 部署</span>
+    </div>
+  </div>
 </body>
 </html>
     `, {
-      headers: { "Content-Type": "text/html; charset=utf-8" }
+      headers: { 'Content-Type': 'text/html; charset=utf-8' },
     });
-  }
-
-  let targetUrl: URL;
-
-  if (url.pathname.startsWith('/https/') || url.pathname.startsWith('/http/')) {
-    const path = url.pathname.substring(1);
-    targetUrl = new URL(`http://${path}${url.search}`);
-  } else if (url.pathname === '/proxy' && url.searchParams.has('url')) {
-    targetUrl = new URL(url.searchParams.get('url')!);
-  } else {
-    return new Response(`
-<!DOCTYPE html>
-<html>
-<head><title>Proxy Error</title></head>
-<body>
-  <h1>代理错误</h1>
-  <p>请使用正确的格式访问代理服务：</p>
-  <ul>
-    <li><a href="/">返回首页</a></li>
-    <li>使用 URL 参数: <code>/proxy?url=https://目标网站.com</code></li>
-  </ul>
-</body>
-</html>
-    `, { status: 400, headers: { "Content-Type": "text/html; charset=utf-8" } });
-  }
-
-  const headers = new Headers(req.headers);
-  headers.set("Host", targetUrl.host);
-  headers.set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
-  headers.set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8");
-  headers.set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8");
-  headers.set("Accept-Encoding", "identity");
-  headers.set("Connection", "keep-alive");
-  headers.delete("x-forwarded-for");
-  headers.delete("x-forwarded-proto");
-  headers.delete("proxy-connection");
-  headers.delete("connection");
-
-  try {
-    const response = await fetch(targetUrl.toString(), {
-      method: req.method,
-      headers,
-      body: req.body,
-      redirect: "follow",
-    });
-
-    const responseHeaders = new Headers(response.headers);
-    responseHeaders.set("X-Proxy-By", "Deno-Proxy");
-    responseHeaders.set("X-Target-Url", targetUrl.toString());
-    responseHeaders.delete("content-security-policy");
-    responseHeaders.delete("content-security-policy-report-only");
-    responseHeaders.delete("strict-transport-security");
-    responseHeaders.delete("content-encoding");
-
-    let responseBody = response.body;
-    const contentType = responseHeaders.get("content-type") || "";
-    
-    if (contentType.includes("text/html")) {
-      const htmlText = await response.text();
-      const rewrittenHtml = rewriteHtmlContent(htmlText, targetUrl);
-      responseBody = new Blob([rewrittenHtml], { type: "text/html; charset=utf-8" });
-    }
-
-    if (response.status >= 300 && response.status < 400) {
-      const location = response.headers.get("location");
-      if (location) {
-        const newLocation = new URL(location, targetUrl.toString());
-        responseHeaders.set("location", `/proxy?url=${encodeURIComponent(newLocation.toString())}`);
-      }
-    }
-
-    return new Response(responseBody, {
-      status: response.status,
-      headers: responseHeaders,
-    });
-  } catch (error) {
-    return new Response(`
-<!DOCTYPE html>
-<html>
-<head><title>Proxy Error</title></head>
-<body>
-  <h1>代理错误</h1>
-  <p>无法连接到目标网站: ${targetUrl.toString()}</p>
-  <p>错误信息: ${error.message}</p>
-  <p><a href="/">返回首页</a></p>
-</body>
-</html>
-    `, { status: 503, headers: { "Content-Type": "text/html; charset=utf-8" } });
-  }
 }
 
-console.log("Deno Proxy Server is running");
+console.log("Deno WebSocket Proxy Server is running");
 
-Deno.serve(handleProxyRequest);
+Deno.serve(handleRequest);
