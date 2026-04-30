@@ -1,11 +1,13 @@
 function rewriteHtmlContent(html: string, targetUrl: URL): string {
   let result = html;
-  
   const baseUrl = `${targetUrl.protocol}//${targetUrl.host}`;
 
   result = result.replace(
     /<a\s+([^>]*)href\s*=\s*["']([^"']+)["']([^>]*)>/gi,
     (match, before, href, after) => {
+      if (href.startsWith('#') || href.startsWith('javascript:')) {
+        return match;
+      }
       let newHref = href;
       if (href.startsWith('http://') || href.startsWith('https://')) {
         newHref = `/proxy?url=${encodeURIComponent(href)}`;
@@ -13,7 +15,7 @@ function rewriteHtmlContent(html: string, targetUrl: URL): string {
         newHref = `/proxy?url=${encodeURIComponent('https:' + href)}`;
       } else if (href.startsWith('/')) {
         newHref = `/proxy?url=${encodeURIComponent(baseUrl + href)}`;
-      } else if (!href.startsWith('#') && !href.startsWith('javascript:')) {
+      } else {
         const currentPath = targetUrl.pathname.substring(0, targetUrl.pathname.lastIndexOf('/') + 1);
         newHref = `/proxy?url=${encodeURIComponent(baseUrl + currentPath + href)}`;
       }
@@ -24,6 +26,7 @@ function rewriteHtmlContent(html: string, targetUrl: URL): string {
   result = result.replace(
     /<img\s+([^>]*)src\s*=\s*["']([^"']+)["']([^>]*)>/gi,
     (match, before, src, after) => {
+      if (src.startsWith('data:')) return match;
       let newSrc = src;
       if (src.startsWith('http://') || src.startsWith('https://')) {
         newSrc = `/proxy?url=${encodeURIComponent(src)}`;
@@ -39,6 +42,7 @@ function rewriteHtmlContent(html: string, targetUrl: URL): string {
   result = result.replace(
     /<script\s+([^>]*)src\s*=\s*["']([^"']+)["']([^>]*)>/gi,
     (match, before, src, after) => {
+      if (src.startsWith('data:') || src.startsWith('blob:')) return match;
       let newSrc = src;
       if (src.startsWith('http://') || src.startsWith('https://')) {
         newSrc = `/proxy?url=${encodeURIComponent(src)}`;
@@ -54,6 +58,7 @@ function rewriteHtmlContent(html: string, targetUrl: URL): string {
   result = result.replace(
     /<link\s+([^>]*)href\s*=\s*["']([^"']+)["']([^>]*)>/gi,
     (match, before, href, after) => {
+      if (href.startsWith('data:')) return match;
       let newHref = href;
       if (href.startsWith('http://') || href.startsWith('https://')) {
         newHref = `/proxy?url=${encodeURIComponent(href)}`;
@@ -69,6 +74,9 @@ function rewriteHtmlContent(html: string, targetUrl: URL): string {
   result = result.replace(
     /<form\s+([^>]*)action\s*=\s*["']([^"']+)["']([^>]*)>/gi,
     (match, before, action, after) => {
+      if (action === '' || action.startsWith('#')) {
+        return match;
+      }
       let newAction = action;
       if (action.startsWith('http://') || action.startsWith('https://')) {
         newAction = `/proxy?url=${encodeURIComponent(action)}`;
@@ -76,7 +84,7 @@ function rewriteHtmlContent(html: string, targetUrl: URL): string {
         newAction = `/proxy?url=${encodeURIComponent('https:' + action)}`;
       } else if (action.startsWith('/')) {
         newAction = `/proxy?url=${encodeURIComponent(baseUrl + action)}`;
-      } else if (!action.startsWith('#')) {
+      } else {
         const currentPath = targetUrl.pathname.substring(0, targetUrl.pathname.lastIndexOf('/') + 1);
         newAction = `/proxy?url=${encodeURIComponent(baseUrl + currentPath + action)}`;
       }
@@ -85,8 +93,9 @@ function rewriteHtmlContent(html: string, targetUrl: URL): string {
   );
 
   result = result.replace(
-    /url\(['"]?([^'")]+)['"]?\)/gi,
+    /background(?:-image)?\s*:\s*url\(['"]?([^'")]+)['"]?\)/gi,
     (match, url) => {
+      if (url.startsWith('data:')) return match;
       let newUrl = url;
       if (url.startsWith('http://') || url.startsWith('https://')) {
         newUrl = `/proxy?url=${encodeURIComponent(url)}`;
@@ -95,7 +104,7 @@ function rewriteHtmlContent(html: string, targetUrl: URL): string {
       } else if (url.startsWith('/')) {
         newUrl = `/proxy?url=${encodeURIComponent(baseUrl + url)}`;
       }
-      return `url(${newUrl})`;
+      return match.replace(url, newUrl);
     }
   );
 
@@ -146,14 +155,6 @@ async function handleProxyRequest(req: Request): Promise<Response> {
       <a href="/proxy?url=https://jsonplaceholder.typicode.com/posts" target="_blank">JSON 数据</a>
     </div>
   </div>
-
-  <div class="method">
-    <h3>🔗 路径方式</h3>
-    <div class="code">https://your-domain.deno.dev/https/目标网站.com/路径</div>
-    <div class="success">
-      <a href="/https/httpbin.org/get" target="_blank">/https/httpbin.org/get</a>
-    </div>
-  </div>
 </body>
 </html>
     `, {
@@ -179,7 +180,6 @@ async function handleProxyRequest(req: Request): Promise<Response> {
   <ul>
     <li><a href="/">返回首页</a></li>
     <li>使用 URL 参数: <code>/proxy?url=https://目标网站.com</code></li>
-    <li>使用路径方式: <code>/https/目标网站.com</code></li>
   </ul>
 </body>
 </html>
@@ -212,7 +212,6 @@ async function handleProxyRequest(req: Request): Promise<Response> {
     responseHeaders.delete("content-security-policy");
     responseHeaders.delete("content-security-policy-report-only");
     responseHeaders.delete("strict-transport-security");
-    responseHeaders.delete("location");
     responseHeaders.delete("content-encoding");
 
     let responseBody = response.body;
